@@ -9,12 +9,13 @@ import {BeforeSwapDelta, toBeforeSwapDelta} from "@uniswap/v4-core/src/types/Bef
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {BaseHook} from "v4-periphery/src/base/hooks/BaseHook.sol";
-import {KeeperCompatibleInterface} from "chainlink/contracts/src/v0.8/automation/interfaces/KeeperCompatibleInterface.sol";
+import {KeeperCompatibleInterface} from
+    "chainlink/contracts/src/v0.8/automation/interfaces/KeeperCompatibleInterface.sol";
 import {AggregatorV3Interface} from "chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 import {Currency} from "v4-core/types/Currency.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
-contract MiHookUniswapV4 is BaseHook, KeeperCompatibleInterface, Ownable {
+contract AutoDCASwapHook is BaseHook, KeeperCompatibleInterface, Ownable {
     using SafeERC20 for IERC20;
 
     struct DCAOrder {
@@ -44,46 +45,26 @@ contract MiHookUniswapV4 is BaseHook, KeeperCompatibleInterface, Ownable {
         Weekly,
         Monthly
     }
+
     event Initialized(address indexed priceFeed, PoolKey poolKey);
     event DCAOrderCreated(
-        bytes32 indexed orderId,
-        address indexed user,
-        uint256 totalAmount,
-        uint256 frequency,
-        uint256 duration
+        bytes32 indexed orderId, address indexed user, uint256 totalAmount, uint256 frequency, uint256 duration
     );
     event DCAOrderCompleted(
-        bytes32 indexed orderId,
-        address indexed user,
-        uint256 swapsExecuted,
-        uint256 remainingBalance
+        bytes32 indexed orderId, address indexed user, uint256 swapsExecuted, uint256 remainingBalance
     );
     event DCAOrderCancelled(bytes32 indexed orderId, address indexed user);
-    event DCASwapExecuted(
-        bytes32 indexed orderId,
-        address indexed user,
-        uint256 amountIn,
-        uint256 amountOut
-    );
-    event Withdrawn(
-        address indexed user,
-        address indexed token,
-        uint256 amount
-    );
+    event DCASwapExecuted(bytes32 indexed orderId, address indexed user, uint256 amountIn, uint256 amountOut);
+    event Withdrawn(address indexed user, address indexed token, uint256 amount);
 
-    constructor(
-        IPoolManager _poolManager
-    ) BaseHook(_poolManager) Ownable(msg.sender) {}
+    constructor(IPoolManager _poolManager) BaseHook(_poolManager) Ownable(msg.sender) {}
 
-    function initialize(
-        address _priceFeed,
-        PoolKey memory _poolKey
-    ) external onlyOwner {
-        require(address(priceFeed) == address(0),"MiHookUniswapV4: Already initialized");
-        require(_priceFeed != address(0),"MiHookUniswapV4: Invalid price feed address");
-        require(Currency.unwrap(_poolKey.currency0) != address(0) &&
-                Currency.unwrap(_poolKey.currency1) != address(0),
-            "MiHookUniswapV4: Invalid pool currencies"
+    function initialize(address _priceFeed, PoolKey memory _poolKey) external onlyOwner {
+        require(address(priceFeed) == address(0), "AutoDCASwapHook: Already initialized");
+        require(_priceFeed != address(0), "AutoDCASwapHook: Invalid price feed address");
+        require(
+            Currency.unwrap(_poolKey.currency0) != address(0) && Currency.unwrap(_poolKey.currency1) != address(0),
+            "AutoDCASwapHook: Invalid pool currencies"
         );
 
         priceFeed = AggregatorV3Interface(_priceFeed);
@@ -97,29 +78,23 @@ contract MiHookUniswapV4 is BaseHook, KeeperCompatibleInterface, Ownable {
         poolKey = _poolKey;
     }
 
-    function getHookPermissions()
-        public
-        pure
-        override
-        returns (Hooks.Permissions memory)
-    {
-        return
-            Hooks.Permissions({
-                beforeInitialize: false,
-                afterInitialize: false,
-                beforeAddLiquidity: false,
-                beforeRemoveLiquidity: false,
-                afterAddLiquidity: false,
-                afterRemoveLiquidity: false,
-                beforeSwap: true,
-                afterSwap: false,
-                beforeDonate: false,
-                afterDonate: false,
-                beforeSwapReturnDelta: false,
-                afterSwapReturnDelta: false,
-                afterAddLiquidityReturnDelta: false,
-                afterRemoveLiquidityReturnDelta: false
-            });
+    function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
+        return Hooks.Permissions({
+            beforeInitialize: false,
+            afterInitialize: false,
+            beforeAddLiquidity: false,
+            beforeRemoveLiquidity: false,
+            afterAddLiquidity: false,
+            afterRemoveLiquidity: false,
+            beforeSwap: true,
+            afterSwap: false,
+            beforeDonate: false,
+            afterDonate: false,
+            beforeSwapReturnDelta: false,
+            afterSwapReturnDelta: false,
+            afterAddLiquidityReturnDelta: false,
+            afterRemoveLiquidityReturnDelta: false
+        });
     }
 
     function beforeSwap(
@@ -128,23 +103,19 @@ contract MiHookUniswapV4 is BaseHook, KeeperCompatibleInterface, Ownable {
         IPoolManager.SwapParams calldata params,
         bytes calldata data
     ) external override returns (bytes4, BeforeSwapDelta, uint24) {
-        require(
-            key.currency0 == poolKey.currency0 &&
-                key.currency1 == poolKey.currency1,
-            "Invalid pool"
-        );
+        require(key.currency0 == poolKey.currency0 && key.currency1 == poolKey.currency1, "Invalid pool");
 
         // "Only check if the sender is the keeper"
         if (sender == keeper) {
             bytes32 orderId = abi.decode(data, (bytes32));
             DCAOrder storage order = dcaOrders[orderId];
 
-            (, int256 price, , , ) = priceFeed.latestRoundData();
+            (, int256 price,,,) = priceFeed.latestRoundData();
             uint256 currentPrice = uint256(price);
 
-            require(order.minPrice == 0 || currentPrice >= order.minPrice,"Price below minimum");
-            require(order.maxPrice == 0 || currentPrice <= order.maxPrice,"Price above maximum");
-            require(order.remainingBalance >= order.amountPerSwap + keeperFee,"Insufficient balance");
+            require(order.minPrice == 0 || currentPrice >= order.minPrice, "Price below minimum");
+            require(order.maxPrice == 0 || currentPrice <= order.maxPrice, "Price above maximum");
+            require(order.remainingBalance >= order.amountPerSwap + keeperFee, "Insufficient balance");
 
             order.remainingBalance -= (order.amountPerSwap + keeperFee);
         }
@@ -167,9 +138,7 @@ contract MiHookUniswapV4 is BaseHook, KeeperCompatibleInterface, Ownable {
 
         require(amountPerSwap > 0, "Amount per swap too low");
 
-        bytes32 orderId = keccak256(
-            abi.encodePacked(msg.sender, block.timestamp)
-        );
+        bytes32 orderId = keccak256(abi.encodePacked(msg.sender, block.timestamp));
 
         address token0 = Currency.unwrap(poolKey.currency0);
         IERC20(token0).safeTransferFrom(msg.sender, address(this), totalAmount);
@@ -190,13 +159,7 @@ contract MiHookUniswapV4 is BaseHook, KeeperCompatibleInterface, Ownable {
 
         dcaOrderIds.push(orderId);
 
-        emit DCAOrderCreated(
-            orderId,
-            msg.sender,
-            totalAmount,
-            frequencyInSeconds,
-            durationInDays
-        );
+        emit DCAOrderCreated(orderId, msg.sender, totalAmount, frequencyInSeconds, durationInDays);
     }
 
     function cancelDCA(bytes32 orderId) external {
@@ -207,7 +170,7 @@ contract MiHookUniswapV4 is BaseHook, KeeperCompatibleInterface, Ownable {
 
         delete dcaOrders[orderId];
 
-        for (uint i = 0; i < dcaOrderIds.length; i++) {
+        for (uint256 i = 0; i < dcaOrderIds.length; i++) {
             if (dcaOrderIds[i] == orderId) {
                 dcaOrderIds[i] = dcaOrderIds[dcaOrderIds.length - 1];
                 dcaOrderIds.pop();
@@ -224,7 +187,9 @@ contract MiHookUniswapV4 is BaseHook, KeeperCompatibleInterface, Ownable {
     }
 
     function withdraw(address token) external {
-        require(token == Currency.unwrap(poolKey.currency0) || token == Currency.unwrap(poolKey.currency1), "Invalid token");
+        require(
+            token == Currency.unwrap(poolKey.currency0) || token == Currency.unwrap(poolKey.currency1), "Invalid token"
+        );
         uint256 balance = IERC20(token).balanceOf(address(this));
         require(balance > 0, "No balance to withdraw");
 
@@ -233,21 +198,11 @@ contract MiHookUniswapV4 is BaseHook, KeeperCompatibleInterface, Ownable {
         emit Withdrawn(msg.sender, token, balance);
     }
 
-    function checkUpkeep(
-        bytes calldata
-    )
-        external
-        view
-        override
-        returns (bool upkeepNeeded, bytes memory performData)
-    {
-        for (uint i = 0; i < dcaOrderIds.length; i++) {
+    function checkUpkeep(bytes calldata) external view override returns (bool upkeepNeeded, bytes memory performData) {
+        for (uint256 i = 0; i < dcaOrderIds.length; i++) {
             bytes32 orderId = dcaOrderIds[i];
             DCAOrder storage order = dcaOrders[orderId];
-            if (
-                block.timestamp >= order.lastExecutionTime + order.frequency &&
-                block.timestamp <= order.endTime
-            ) {
+            if (block.timestamp >= order.lastExecutionTime + order.frequency && block.timestamp <= order.endTime) {
                 return (true, abi.encode(orderId));
             }
         }
@@ -261,15 +216,9 @@ contract MiHookUniswapV4 is BaseHook, KeeperCompatibleInterface, Ownable {
         DCAOrder storage order = dcaOrders[orderId];
 
         require(order.user != address(0), "Order does not exist");
-        require(
-            block.timestamp >= order.lastExecutionTime + order.frequency,
-            "Too early"
-        );
+        require(block.timestamp >= order.lastExecutionTime + order.frequency, "Too early");
         require(block.timestamp <= order.endTime, "DCA period ended");
-        require(
-            order.remainingBalance >= order.amountPerSwap,
-            "Insufficient balance for swap"
-        );
+        require(order.remainingBalance >= order.amountPerSwap, "Insufficient balance for swap");
 
         // simulate the swap
         uint256 amountOut = order.amountPerSwap;
@@ -277,17 +226,11 @@ contract MiHookUniswapV4 is BaseHook, KeeperCompatibleInterface, Ownable {
         order.swapsExecuted++;
         order.lastExecutionTime = block.timestamp;
 
-        emit DCASwapExecuted(
-            orderId,
-            order.user,
-            order.amountPerSwap,
-            amountOut
-        );
+        emit DCASwapExecuted(orderId, order.user, order.amountPerSwap, amountOut);
 
         // Check if the DCA order has been completed
-        bool isCompleted = order.swapsExecuted >= order.totalSwaps ||
-            block.timestamp >= order.endTime ||
-            order.remainingBalance < order.amountPerSwap;
+        bool isCompleted = order.swapsExecuted >= order.totalSwaps || block.timestamp >= order.endTime
+            || order.remainingBalance < order.amountPerSwap;
 
         if (isCompleted) {
             address user = order.user;
@@ -298,7 +241,7 @@ contract MiHookUniswapV4 is BaseHook, KeeperCompatibleInterface, Ownable {
             delete dcaOrders[orderId];
 
             // Remove the orderId from the dcaOrderIds array
-            for (uint i = 0; i < dcaOrderIds.length; i++) {
+            for (uint256 i = 0; i < dcaOrderIds.length; i++) {
                 if (dcaOrderIds[i] == orderId) {
                     dcaOrderIds[i] = dcaOrderIds[dcaOrderIds.length - 1];
                     dcaOrderIds.pop();
@@ -308,24 +251,14 @@ contract MiHookUniswapV4 is BaseHook, KeeperCompatibleInterface, Ownable {
 
             // Return the remaining balance to the user if necessary
             if (remainingBalance > 0) {
-                IERC20(Currency.unwrap(poolKey.currency0)).transfer(
-                    user,
-                    remainingBalance
-                );
+                IERC20(Currency.unwrap(poolKey.currency0)).transfer(user, remainingBalance);
             }
 
-            emit DCAOrderCompleted(
-                orderId,
-                user,
-                swapsExecuted,
-                remainingBalance
-            );
+            emit DCAOrderCompleted(orderId, user, swapsExecuted, remainingBalance);
         }
     }
 
-    function getFrequencyInSeconds(
-        Frequency _frequency
-    ) internal pure returns (uint256) {
+    function getFrequencyInSeconds(Frequency _frequency) internal pure returns (uint256) {
         if (_frequency == Frequency.Hourly) return 1 hours;
         if (_frequency == Frequency.Daily) return 1 days;
         if (_frequency == Frequency.Weekly) return 7 days;
@@ -340,9 +273,8 @@ contract MiHookUniswapV4 is BaseHook, KeeperCompatibleInterface, Ownable {
     function setKeeperFee(uint256 _fee) external onlyOwner {
         keeperFee = _fee;
     }
-    function getOrderDetails(
-        bytes32 orderId
-    )
+
+    function getOrderDetails(bytes32 orderId)
         public
         view
         returns (
@@ -380,7 +312,7 @@ contract MiHookUniswapV4 is BaseHook, KeeperCompatibleInterface, Ownable {
     }
 
     function isDcaOrderIdPresent(bytes32 orderId) public view returns (bool) {
-        for (uint i = 0; i < dcaOrderIds.length; i++) {
+        for (uint256 i = 0; i < dcaOrderIds.length; i++) {
             if (dcaOrderIds[i] == orderId) {
                 return true;
             }
